@@ -147,7 +147,7 @@ std::map<std::string, ignition::gazebo::Entity> IgnitionROSControlPluginPrivate:
     {
       if (std::find(joints_.begin(), joints_.end(), jointName) == joints_.end())
       {
-        ROS_DEBUG_STREAM("[IGNITION ROS Control] joint [%s] is not in specified joints, skipping", jointName.c_str());
+        ROS_DEBUG_STREAM("[IGNITION ROS Control] joint [%s] is not in specified joints, skipping" << jointName.c_str());
         continue;
       }
     }
@@ -345,7 +345,7 @@ void IgnitionROSControlPlugin::Configure(const ignition::gazebo::Entity& _entity
 
   for (auto& it : enabledJoints)
   {
-    ROS_DEBUG_STREAM("[Ignition ROS Control] Added joint [%s]", it.first);
+    ROS_DEBUG_STREAM("[Ignition ROS Control] Added joint " <<  it.first);
   }
 
   if (enabledJoints.size() == 0)
