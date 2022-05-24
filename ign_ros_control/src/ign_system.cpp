@@ -126,6 +126,12 @@ bool IgnitionSystem::initSim(ros::NodeHandle model_nh,
   for (unsigned int j = 0; j < this->dataPtr->n_dof_; j++) {
     joint_name = this->dataPtr->joints_[j].name = transmissions[j].joints_[0].name_;
 
+    //check if joints are really enabled and not left out
+    if (enableJoints.find(joint_name) == enableJoints.end()) {
+      ROS_ERROR("[IGNITION ROS Control] Joint [%s] was not specified for this controller, skipping", joint_name.c_str());
+      continue;
+    }
+
     ignition::gazebo::Entity simjoint = enableJoints[joint_name];
     this->dataPtr->joints_[j].sim_joint = simjoint;
 

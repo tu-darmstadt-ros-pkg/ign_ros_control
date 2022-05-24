@@ -1,3 +1,10 @@
+# Fork of ign_ros_control
+
+Enables to only use in the URDF specified joints (with <joints>) in the manager.
+This allows to have multiple manager/plugin instances on the same robot with different nameSpaces.
+
+
+
 # ign_ros_control
 
 This is a ROS package for integrating the `ros_control` controller architecture with the [Ignition Gazebo](http://ignitionrobotics.org/) simulator.

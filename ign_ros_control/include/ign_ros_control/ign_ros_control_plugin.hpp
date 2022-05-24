@@ -18,6 +18,7 @@
 #include <ignition/gazebo/System.hh>
 
 #include <memory>
+#include <sstream>
 
 namespace ign_ros_control
 {

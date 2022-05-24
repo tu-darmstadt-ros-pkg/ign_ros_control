@@ -46,14 +46,20 @@ namespace ign_ros_control
 class IgnitionROSControlPluginPrivate
 {
 public:
-
-  IgnitionROSControlPluginPrivate(const std::string& robot_namespace,
-                                  const std::string& robot_description
-                                  )
-    : model_nh_(robot_namespace)
-    , robot_description_(robot_description)
+  IgnitionROSControlPluginPrivate(const std::string& robot_namespace, const std::string& robot_description,
+                                  const std::vector<std::string>& joints)
+    : model_nh_(robot_namespace), robot_description_(robot_description), joints_(joints)
   {
-    async_ros_spin_.reset(new ros::AsyncSpinner(0)); // will use a thread for each CPU core
+    if (joints.size() == 0)
+    {
+      specified_joints_ = false;
+    }
+    else
+    {
+      specified_joints_ = true;
+    }
+
+    async_ros_spin_.reset(new ros::AsyncSpinner(0));  // will use a thread for each CPU core
     async_ros_spin_->start();
   }
 
@@ -65,21 +71,23 @@ public:
   /// \brief Get the URDF XML from the parameter server
   std::string getURDF(std::string param_name) const;
 
-  bool parseTransmissionsFromURDF(const std::string &urdf_string);
+  bool parseTransmissionsFromURDF(const std::string& urdf_string);
 
   /// \brief Get a list of enabled, unique, 1-axis joints of the model. If no
-  /// joint names are specified in the plugin configuration, all valid 1-axis
+  /// joint names are specified in <joints>, all valid 1-axis
   /// joints are returned
   /// \param[in] _entity Entity of the model that the plugin is being
   /// configured for
   /// \param[in] _ecm Ignition Entity Component Manager
   /// \return List of entities containing all enabled joints
-  std::map<std::string, ignition::gazebo::Entity> GetEnabledJoints(
-      const ignition::gazebo::Entity & _entity,
-      ignition::gazebo::EntityComponentManager & _ecm) const;
+  std::map<std::string, ignition::gazebo::Entity>
+  GetEnabledJoints(const ignition::gazebo::Entity& _entity, ignition::gazebo::EntityComponentManager& _ecm) const;
 
   // Transmissions in this plugin's scope
   std::vector<transmission_interface::TransmissionInfo> transmissions_;
+
+  // Enabled Joints
+  std::map<std::string, ignition::gazebo::Entity> enabledJoints_;
 
   /// \brief Entity ID for sensor within Gazebo.
   ignition::gazebo::Entity entity_;
@@ -88,39 +96,39 @@ public:
   ros::Duration control_period_ = ros::Duration(1, 0);
 
   /// \brief Interface loader
-  std::shared_ptr<pluginlib::ClassLoader<
-  ign_ros_control::IgnitionSystemInterface>>
-  robot_hw_sim_loader_{nullptr};
+  std::shared_ptr<pluginlib::ClassLoader<ign_ros_control::IgnitionSystemInterface>> robot_hw_sim_loader_{ nullptr };
 
   /// \brief Controller manager
-  std::shared_ptr<controller_manager::ControllerManager>
-  controller_manager_{nullptr};
+  std::shared_ptr<controller_manager::ControllerManager> controller_manager_{ nullptr };
 
   /// \brief Robot hardware
-  boost::shared_ptr<ign_ros_control::IgnitionSystemInterface>
-  robot_hw_{nullptr};
+  boost::shared_ptr<ign_ros_control::IgnitionSystemInterface> robot_hw_{ nullptr };
 
   /// \brief Last time the update method was called
   ros::Time last_update_sim_time_ros_;
 
   /// \brief ECM pointer
-  ignition::gazebo::EntityComponentManager * ecm_{nullptr};
+  ignition::gazebo::EntityComponentManager* ecm_{ nullptr };
 
   // Node Handles
-  ros::NodeHandle model_nh_; // namespaces to robot name
+  ros::NodeHandle model_nh_;  // namespaces to robot name
 
   /// \brief Robot description
   std::string robot_description_ = "robot_description";
+
+  /// \brief joints specified by config
+  std::vector<std::string> joints_;
+
+  // set if joints are specified in the config
+  bool specified_joints_;
 
   /// \brief ROS comm
   std::shared_ptr<ros::AsyncSpinner> async_ros_spin_;
 };
 
 //////////////////////////////////////////////////
-std::map<std::string, ignition::gazebo::Entity>
-IgnitionROSControlPluginPrivate::GetEnabledJoints(
-    const ignition::gazebo::Entity & _entity,
-    ignition::gazebo::EntityComponentManager & _ecm) const
+std::map<std::string, ignition::gazebo::Entity> IgnitionROSControlPluginPrivate::GetEnabledJoints(
+    const ignition::gazebo::Entity& _entity, ignition::gazebo::EntityComponentManager& _ecm) const
 {
   std::map<std::string, ignition::gazebo::Entity> output;
 
@@ -130,47 +138,49 @@ IgnitionROSControlPluginPrivate::GetEnabledJoints(
   auto jointEntities = _ecm.ChildrenByComponents(_entity, ignition::gazebo::components::Joint());
 
   // Iterate over all joints and verify whether they can be enabled or not
-  for (const auto & jointEntity : jointEntities) {
-    const auto jointName = _ecm.Component<ignition::gazebo::components::Name>(
-          jointEntity)->Data();
+  for (const auto& jointEntity : jointEntities)
+  {
+    const auto jointName = _ecm.Component<ignition::gazebo::components::Name>(jointEntity)->Data();
+
+    // If <joints> was specified, only take these specified joints
+    if (specified_joints_)
+    {
+      if (std::find(joints_.begin(), joints_.end(), jointName) == joints_.end())
+      {
+        ROS_INFO("[IGNITION ROS Control] joint [%s] is not in specified joints, skipping", jointName.c_str());
+        continue;
+      }
+    }
 
     // Make sure the joint type is supported, i.e. it has exactly one
     // actuated axis
-    const auto * jointType = _ecm.Component<ignition::gazebo::components::JointType>(jointEntity);
-    switch (jointType->Data()) {
-    case sdf::JointType::PRISMATIC:
-    case sdf::JointType::REVOLUTE:
-    case sdf::JointType::CONTINUOUS:
-    case sdf::JointType::GEARBOX:
+    const auto* jointType = _ecm.Component<ignition::gazebo::components::JointType>(jointEntity);
+    switch (jointType->Data())
     {
-      // Supported joint type
-      break;
-    }
-    case sdf::JointType::FIXED:
-    {
-      ROS_INFO(
-            "[Ignition ROS Control] Fixed joint [%s] (Entity=%lu)] is skipped",
-            jointName.c_str(), jointEntity);
-      continue;
-    }
-    case sdf::JointType::REVOLUTE2:
-    case sdf::JointType::SCREW:
-    case sdf::JointType::BALL:
-    case sdf::JointType::UNIVERSAL:
-    {
-      ROS_WARN(
-            "[Ignition ROS Control] Joint [%s] (Entity=%lu)] is of unsupported type."
-            " Only joints with a single axis are supported.",
-            jointName.c_str(), jointEntity);
-      continue;
-    }
-    default:
-    {
-      ROS_WARN(
-            "[Ignition ROS Control] Joint [%s] (Entity=%lu)] is of unknown type",
-            jointName.c_str(), jointEntity);
-      continue;
-    }
+      case sdf::JointType::PRISMATIC:
+      case sdf::JointType::REVOLUTE:
+      case sdf::JointType::CONTINUOUS:
+      case sdf::JointType::GEARBOX: {
+        // Supported joint type
+        break;
+      }
+      case sdf::JointType::FIXED: {
+        ROS_INFO("[Ignition ROS Control] Fixed joint [%s] (Entity=%lu)] is skipped", jointName.c_str(), jointEntity);
+        continue;
+      }
+      case sdf::JointType::REVOLUTE2:
+      case sdf::JointType::SCREW:
+      case sdf::JointType::BALL:
+      case sdf::JointType::UNIVERSAL: {
+        ROS_WARN("[Ignition ROS Control] Joint [%s] (Entity=%lu)] is of unsupported type."
+                 " Only joints with a single axis are supported.",
+                 jointName.c_str(), jointEntity);
+        continue;
+      }
+      default: {
+        ROS_WARN("[Ignition ROS Control] Joint [%s] (Entity=%lu)] is of unknown type", jointName.c_str(), jointEntity);
+        continue;
+      }
     }
     output[jointName] = jointEntity;
   }
@@ -190,14 +200,16 @@ std::string IgnitionROSControlPluginPrivate::getURDF(std::string param_name) con
     if (model_nh_.searchParam(param_name, search_param_name))
     {
       ROS_INFO_ONCE("[Ignition ROS Control] ign_ros_control_plugin is waiting for model"
-                    " URDF in parameter [%s] on the ROS param server.", search_param_name.c_str());
+                    " URDF in parameter [%s] on the ROS param server.",
+                    search_param_name.c_str());
 
       model_nh_.getParam(search_param_name, urdf_string);
     }
     else
     {
       ROS_INFO_ONCE("[Ignition ROS Control] ign_ros_control_plugin is waiting for model"
-                    " URDF in parameter [%s] on the ROS param server.", robot_description_.c_str());
+                    " URDF in parameter [%s] on the ROS param server.",
+                    robot_description_.c_str());
 
       model_nh_.getParam(param_name, urdf_string);
     }
@@ -213,12 +225,23 @@ std::string IgnitionROSControlPluginPrivate::getURDF(std::string param_name) con
 bool IgnitionROSControlPluginPrivate::parseTransmissionsFromURDF(const std::string& urdf_string)
 {
   transmission_interface::TransmissionParser::parse(urdf_string, transmissions_);
+
+  // filter transmissions for only specified joints
+  if (specified_joints_) {
+    std::vector<transmission_interface::TransmissionInfo> transmissions_filtered;
+    for (auto& it : transmissions_) {
+      if (enabledJoints_.find(it.joints_[0].name_) != enabledJoints_.end()) {
+        transmissions_filtered.push_back(it);
+      }
+    }
+    transmissions_ = transmissions_filtered;
+  }
+
   return true;
 }
 
 //////////////////////////////////////////////////
-IgnitionROSControlPlugin::IgnitionROSControlPlugin()
-  : dataPtr(nullptr)
+IgnitionROSControlPlugin::IgnitionROSControlPlugin() : dataPtr(nullptr)
 {
 }
 
@@ -228,22 +251,22 @@ IgnitionROSControlPlugin::~IgnitionROSControlPlugin()
 }
 
 //////////////////////////////////////////////////
-void IgnitionROSControlPlugin::Configure(
-    const ignition::gazebo::Entity & _entity,
-    const std::shared_ptr<const sdf::Element> & _sdf,
-    ignition::gazebo::EntityComponentManager & _ecm,
-    ignition::gazebo::EventManager &)
+void IgnitionROSControlPlugin::Configure(const ignition::gazebo::Entity& _entity,
+                                         const std::shared_ptr<const sdf::Element>& _sdf,
+                                         ignition::gazebo::EntityComponentManager& _ecm,
+                                         ignition::gazebo::EventManager&)
 {
   // Get namespace for nodehandle
   std::string robot_namespace, robot_description, robot_hw_sim_type_str;
   int update_rate;
-  if(_sdf->HasElement("robotNamespace"))
+  std::vector<std::string> joints;
+  if (_sdf->HasElement("robotNamespace"))
   {
     robot_namespace = _sdf->Get<std::string>("robotNamespace");
   }
   else
   {
-    robot_namespace = ""; // default
+    robot_namespace = "";  // default
   }
   // Get robot_description ROS param name
   if (_sdf->HasElement("robotParam"))
@@ -254,17 +277,34 @@ void IgnitionROSControlPlugin::Configure(
   {
     robot_description = "robot_description";
   }
+  // Get supported joints
+  if (_sdf->HasElement("joints"))
+  {
+    std::stringstream ssin(_sdf->Get<std::string>("joints"));
+    while (ssin.good())
+    {
+      std::string joint;
+      ssin >> joint;
+      joints.push_back(joint);
+    }
+  }
+  else
+  {
+    ROS_DEBUG_STREAM("[Ignition ROS Control] No joints specified, using all joints available.");
+  }
+
   // Get the robot simulation interface type
-  if(_sdf->HasElement("robotSimType"))
+  if (_sdf->HasElement("robotSimType"))
   {
     robot_hw_sim_type_str = _sdf->Get<std::string>("robotSimType");
   }
   else
   {
     robot_hw_sim_type_str = "ign_ros_control/IgnitionSystem";
-    ROS_DEBUG_STREAM("[Ignition ROS Control] Using default plugin for RobotHWSim (none specified in URDF/SDF)\""<<robot_hw_sim_type_str<<"\"");
+    ROS_DEBUG_STREAM("[Ignition ROS Control] Using default plugin for RobotHWSim (none specified in URDF/SDF)\""
+                     << robot_hw_sim_type_str << "\"");
   }
-  if(_sdf->HasElement("updateRate"))
+  if (_sdf->HasElement("updateRate"))
   {
     update_rate = _sdf->Get<int>("updateRate");
   }
@@ -275,36 +315,41 @@ void IgnitionROSControlPlugin::Configure(
   }
 
   // setup ros related
-  std::string ros_node_name = "ign_ros_control_plugin";
+  std::string ros_node_name = "ign_ros_control_plugin_" + robot_namespace;
   int argc = 1;
   char* arg0 = strdup(ros_node_name.c_str());
-  char* argv[] = {arg0, 0};
+  char* argv[] = { arg0, 0 };
   if (!ros::isInitialized())
-    ros::init(argc,argv,ros_node_name,ros::init_options::NoSigintHandler);
+    ros::init(argc, argv, ros_node_name, ros::init_options::NoSigintHandler);
   else
     ROS_ERROR("[Ignition ROS Control] Something other than this ign_ros_control_plugin started ros::init(...).");
 
-  dataPtr = std::make_unique<IgnitionROSControlPluginPrivate>(robot_namespace,robot_description);
+  dataPtr = std::make_unique<IgnitionROSControlPluginPrivate>(robot_namespace, robot_description, joints);
 
   // Make sure the controller is attached to a valid model
   const auto model = ignition::gazebo::Model(_entity);
-  if (!model.Valid(_ecm)) {
-    ROS_ERROR(
-          "[Ignition ROS Control] Failed to initialize because [%s] (Entity=%lu)] is not a model."
-          "Please make sure that Ignition ROS Control is attached to a valid model.",
-          model.Name(_ecm).c_str(), _entity);
+  if (!model.Valid(_ecm))
+  {
+    ROS_ERROR("[Ignition ROS Control] Failed to initialize because [%s] (Entity=%lu)] is not a model."
+              "Please make sure that Ignition ROS Control is attached to a valid model.",
+              model.Name(_ecm).c_str(), _entity);
     return;
   }
 
-  ROS_DEBUG_STREAM("[Ignition ROS Control] Setting up controller for [" <<
-                   model.Name(_ecm) << "] (Entity=" << _entity << ")].");
+  ROS_DEBUG_STREAM("[Ignition ROS Control] Setting up controller for [" << model.Name(_ecm) << "] (Entity=" << _entity
+                                                                        << ")].");
 
   // Get list of enabled joints
-  auto enabledJoints = this->dataPtr->GetEnabledJoints(
-        _entity,
-        _ecm);
+  this->dataPtr->enabledJoints_ = this->dataPtr->GetEnabledJoints(_entity, _ecm);
+  auto enabledJoints = this->dataPtr->enabledJoints_;
 
-  if (enabledJoints.size() == 0) {
+  for (auto& it : enabledJoints)
+  {
+    std::cout << it.first << std::endl;
+  }
+
+  if (enabledJoints.size() == 0)
+  {
     ROS_DEBUG_STREAM("[Ignition ROS Control] There are no available Joints.");
     return;
   }
@@ -322,16 +367,17 @@ void IgnitionROSControlPlugin::Configure(
   // Load the RobotHWSim abstraction to interface the controllers with the gazebo model
   try
   {
-    this->dataPtr->robot_hw_sim_loader_.reset
-        (new pluginlib::ClassLoader<ign_ros_control::IgnitionSystemInterface>
-         ("ign_ros_control",
-          "ign_ros_control::IgnitionSystemInterface"));
+    this->dataPtr->robot_hw_sim_loader_.reset(
+        new pluginlib::ClassLoader<ign_ros_control::IgnitionSystemInterface>("ign_ros_control", "ign_ros_control::"
+                                                                                                "IgnitionSystemInterfac"
+                                                                                                "e"));
 
     this->dataPtr->robot_hw_ = this->dataPtr->robot_hw_sim_loader_->createInstance(robot_hw_sim_type_str);
-    //urdf::Model urdf_model;
-    //const urdf::Model *const urdf_model_ptr = urdf_model.initString(urdf_string) ? &urdf_model : nullptr;
+    // urdf::Model urdf_model;
+    // const urdf::Model *const urdf_model_ptr = urdf_model.initString(urdf_string) ? &urdf_model : nullptr;
 
-    if(!this->dataPtr->robot_hw_->initSim(this->dataPtr->model_nh_, enabledJoints, _ecm, this->dataPtr->transmissions_, update_rate))
+    if (!this->dataPtr->robot_hw_->initSim(this->dataPtr->model_nh_, enabledJoints, _ecm, this->dataPtr->transmissions_,
+                                           update_rate))
     {
       ROS_FATAL("[Ignition ROS Control] Could not initialize robot simulation interface.");
       return;
@@ -339,14 +385,12 @@ void IgnitionROSControlPlugin::Configure(
 
     // Create the controller manager
     ROS_DEBUG_STREAM("[Ignition ROS Control] Loading controller_manager.");
-    this->dataPtr->controller_manager_.reset
-        (new controller_manager::ControllerManager(this->dataPtr->robot_hw_.get(), this->dataPtr->model_nh_));
-
-
+    this->dataPtr->controller_manager_.reset(
+        new controller_manager::ControllerManager(this->dataPtr->robot_hw_.get(), this->dataPtr->model_nh_));
   }
-  catch(pluginlib::LibraryLoadException &ex)
+  catch (pluginlib::LibraryLoadException& ex)
   {
-    ROS_FATAL_STREAM("[Ignition ROS Control] Failed to create robot simulation interface loader: "<<ex.what());
+    ROS_FATAL_STREAM("[Ignition ROS Control] Failed to create robot simulation interface loader: " << ex.what());
   }
 
   this->dataPtr->control_period_ = ros::Duration(ros::Rate(update_rate));
@@ -355,26 +399,27 @@ void IgnitionROSControlPlugin::Configure(
 }
 
 //////////////////////////////////////////////////
-void IgnitionROSControlPlugin::PreUpdate(
-    const ignition::gazebo::UpdateInfo & _info,
-    ignition::gazebo::EntityComponentManager & /*_ecm*/)
+void IgnitionROSControlPlugin::PreUpdate(const ignition::gazebo::UpdateInfo& _info,
+                                         ignition::gazebo::EntityComponentManager& /*_ecm*/)
 {
-  static bool warned{false};
-  if (!warned) {
-    double dt = std::chrono::duration_cast<std::chrono::duration<double>>( _info.dt ).count(); // Secs
+  static bool warned{ false };
+  if (!warned)
+  {
+    double dt = std::chrono::duration_cast<std::chrono::duration<double>>(_info.dt).count();  // Secs
     ros::Duration gazebo_period(dt);
 
     // Check the period against the simulation period
-    if (this->dataPtr->control_period_.toSec() < dt) {
-      ROS_ERROR_STREAM(
-            "[Ignition ROS Control] Desired controller update period (" << this->dataPtr->control_period_.toSec() <<
-            " s) is faster than the gazebo simulation period (" <<
-            gazebo_period.toSec() << " s).");
-    } else if (this->dataPtr->control_period_.toSec() > gazebo_period.toSec()) {
-      ROS_WARN_STREAM(
-            "[Ignition ROS Control] Desired controller update period (" << this->dataPtr->control_period_.toSec() <<
-            " s) is slower than the gazebo simulation period (" <<
-            gazebo_period.toSec() << " s).");
+    if (this->dataPtr->control_period_.toSec() < dt)
+    {
+      ROS_ERROR_STREAM("[Ignition ROS Control] Desired controller update period ("
+                       << this->dataPtr->control_period_.toSec() << " s) is faster than the gazebo simulation period ("
+                       << gazebo_period.toSec() << " s).");
+    }
+    else if (this->dataPtr->control_period_.toSec() > gazebo_period.toSec())
+    {
+      ROS_WARN_STREAM("[Ignition ROS Control] Desired controller update period ("
+                      << this->dataPtr->control_period_.toSec() << " s) is slower than the gazebo simulation period ("
+                      << gazebo_period.toSec() << " s).");
     }
     warned = true;
   }
@@ -385,29 +430,25 @@ void IgnitionROSControlPlugin::PreUpdate(
 }
 
 //////////////////////////////////////////////////
-void IgnitionROSControlPlugin::PostUpdate(
-    const ignition::gazebo::UpdateInfo & _info,
-    const ignition::gazebo::EntityComponentManager & /*_ecm*/)
+void IgnitionROSControlPlugin::PostUpdate(const ignition::gazebo::UpdateInfo& _info,
+                                          const ignition::gazebo::EntityComponentManager& /*_ecm*/)
 {
-
   // Get the simulation time and period
-  double sim_time = std::chrono::duration_cast<std::chrono::duration<double>>( _info.simTime ).count(); // Secs
+  double sim_time = std::chrono::duration_cast<std::chrono::duration<double>>(_info.simTime).count();  // Secs
 
   ros::Time sim_time_ros(sim_time);
   ros::Duration sim_period(sim_time_ros.toSec() - this->dataPtr->last_update_sim_time_ros_.toSec());
 
-  if (sim_period.toSec() >= this->dataPtr->control_period_.toSec()) {
+  if (sim_period.toSec() >= this->dataPtr->control_period_.toSec())
+  {
     this->dataPtr->last_update_sim_time_ros_ = sim_time_ros;
     this->dataPtr->robot_hw_->read();
     this->dataPtr->controller_manager_->update(sim_time_ros, sim_period);
   }
-
 }
 }  // namespace ign_ros_control
 
-IGNITION_ADD_PLUGIN(
-    ign_ros_control::IgnitionROSControlPlugin,
-    ignition::gazebo::System,
-    ign_ros_control::IgnitionROSControlPlugin::ISystemConfigure,
-    ign_ros_control::IgnitionROSControlPlugin::ISystemPreUpdate,
-    ign_ros_control::IgnitionROSControlPlugin::ISystemPostUpdate)
+IGNITION_ADD_PLUGIN(ign_ros_control::IgnitionROSControlPlugin, ignition::gazebo::System,
+                    ign_ros_control::IgnitionROSControlPlugin::ISystemConfigure,
+                    ign_ros_control::IgnitionROSControlPlugin::ISystemPreUpdate,
+                    ign_ros_control::IgnitionROSControlPlugin::ISystemPostUpdate)
